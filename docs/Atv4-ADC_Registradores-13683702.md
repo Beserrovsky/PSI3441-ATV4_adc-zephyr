@@ -1,4 +1,4 @@
-# Relatório — Semáforo com RGB LED no FRDM-KL25Z
+# Relatório — ADC via Registradores no FRDM-KL25Z
 
 ## Nome
 Felipe Beserra de Oliveira
@@ -6,132 +6,203 @@ Felipe Beserra de Oliveira
 ---
 
 ## Número USP
-Número USP Aqui
+13683702
 
 ---
 
 ## Respostas, comentários e análises
 
-O experimento consistiu na utilização da placa FRDM-KL25Z com o sistema operacional embarcado Zephyr RTOS para controlar o LED RGB integrado da placa.
+### Descrição da Atividade
 
-Os pinos utilizados foram:
+O experimento consiste em fazer uma aquisição analógica no FRDM-KL25Z configurando diretamente os registradores do ADC0 (sem usar o driver ADC do Zephyr) e, a partir do valor lido, acender o LED azul quando a tensão estiver próxima de 3.3V e o LED verde quando estiver próxima de 0V.
 
-| Cor | Pino |
-|---|---|
-| Vermelho | PTB18 |
-| Verde | PTB19 |
-| Azul | PTD1 |
+O canal utilizado foi o `ADC0_SE8`, disponível no pino PTB0.
 
-O LED RGB da FRDM-KL25Z utiliza lógica ativa em nível baixo (*active low*), ou seja:
+### Registradores utilizados
 
-- `0` → LED ligado
-- `1` → LED desligado
+| Registrador | Endereço | Função |
+|---|---|---|
+| `SIM_SCGC6` | 0x4004803C | Habilita o clock do módulo ADC0 (bit 27) |
+| `SIM_SCGC5` | 0x40048038 | Habilita o clock dos Ports B e D (bits 10 e 12) |
+| `PORTB_PCR0` | 0x4004A000 | Configura PTB0 como entrada analógica (MUX = 000) |
+| `ADC0_CFG1` | 0x4003B008 | Resolução (12 bits) e divisor de clock do ADC |
+| `ADC0_SC1A` | 0x4003B000 | Seleciona o canal e inicia a conversão; bit `COCO` indica conversão completa |
+| `ADC0_RA` | 0x4003B010 | Resultado da conversão (12 bits) |
 
-O programa implementa o comportamento de um semáforo simples:
+A conversão é feita por polling: o canal é escrito em `ADC0_SC1A`, o que dispara a conversão, e o programa aguarda em loop até o bit `COCO` (bit 7) ser setado antes de ler `ADC0_RA`.
 
-1. Vermelho ligado por 5 segundos
-2. Verde ligado por 5 segundos
-3. Amarelo (vermelho + verde) por 2 segundos
-4. Repetição contínua do ciclo
+O valor lido (0–4095) é convertido para milivolts:
 
-Durante o desenvolvimento foi necessário adaptar os includes do Zephyr para versões mais recentes do framework, substituindo:
-
-```c
-#include <zephyr.h>
+```
+mv = raw * VREF_MV / 4095
 ```
 
-por:
+com `VREF_MV = 3300`.
 
-```c
-#include <zephyr/kernel.h>
-```
+### Acionamento dos LEDs
 
-Inicialmente, o tutorial recomendava simplificar o código evitando o uso de *Device Tree (DT)*. Entretanto, não foi possível adaptar corretamente o código sem DT para a versão mais recente do framework utilizada no ambiente PlatformIO/Zephyr. Dessa forma, optou-se por investir em uma implementação compatível com o modelo atual do Zephyr, utilizando Device Tree e as APIs modernas de GPIO.
+PTD1 (azul) e PTB19 (verde) foram configurados como saída via registradores (`PORTx_PCRn`, `GPIOx_PDDR`, `GPIOx_PSOR/PCOR`), com a mesma lógica *active-low* usada nas demais atividades. A cada leitura do ADC:
 
-As informações referentes aos LEDs RGB da placa foram obtidas na documentação oficial da plataforma:
+- `mv >= 2800`: LED azul ligado, verde apagado (tensão próxima de 3.3V)
+- `mv <= 500`: LED verde ligado, azul apagado (tensão próxima de 0V)
+- valor intermediário: ambos apagados
 
-> *FRDM-KL25Z User's Manual*, Rev. 2.0, 2013-10-24  
-> Capítulo 5 — *FRDM-KL25Z Hardware Description*  
-> Seção 5.6 — *RGB LED*
+### Testes realizados
 
-Também foram utilizadas as APIs de GPIO do Zephyr para configuração e controle dos pinos digitais.
+A entrada PTB0 foi ligada manualmente a 3.3V, a GND e a um potenciômetro (faixa intermediária), confirmando que o LED azul acende perto de 3.3V, o verde perto de 0V, e nenhum dos dois nas faixas intermediárias. Os valores lidos (`raw` e `mv`) são impressos via `printk` a cada 500ms.
 
 ---
 
 ## Código (main.c)
 
 ```c
+/*
+ * Atividade 4 — ADC via Registradores
+ * FRDM-KL25Z: leitura analógica em PTB0 (ADC0_SE8) usando acesso direto
+ * aos registradores do ADC0 (SIM_SCGC6, ADC0_CFG1, ADC0_SC1A, ADC0_RA).
+ * O valor lido aciona o LED azul (PTD1) quando próximo de 3.3V e o
+ * LED verde (PTB19) quando próximo de 0V, ambos via registradores GPIO.
+ */
 #include <zephyr/kernel.h>
-#include <zephyr/device.h>
-#include <zephyr/drivers/gpio.h>
+#include <zephyr/sys/printk.h>
 
-/* RGB LED pins */
-#define RED_PIN     18
-#define GREEN_PIN   19
-#define BLUE_PIN    1
+/* SIM — habilitação de clock */
+#define SIM_SCGC5           (*((volatile uint32_t *)0x40048038U))
+#define SIM_SCGC6           (*((volatile uint32_t *)0x4004803CU))
+#define SIM_SCGC5_PORTB     (1U << 10)
+#define SIM_SCGC5_PORTD     (1U << 12)
+#define SIM_SCGC6_ADC0      (1U << 27)
 
-/* GPIO controllers */
-#define RED_GPIO    DT_NODELABEL(gpiob)
-#define GREEN_GPIO  DT_NODELABEL(gpiob)
-#define BLUE_GPIO   DT_NODELABEL(gpiod)
+/* PORTB_PCR0: MUX=000 configura pino como analógico */
+#define PORTB_PCR0          (*((volatile uint32_t *)0x4004A000U))
 
-static const struct device *gpiob = DEVICE_DT_GET(RED_GPIO);
-static const struct device *gpiod = DEVICE_DT_GET(BLUE_GPIO);
+/* PORTB_PCR19 / PORTD_PCR1: MUX=001 configura pino como GPIO */
+#define PORTB_PCR19         (*((volatile uint32_t *)0x4004A04CU))
+#define PORTD_PCR1          (*((volatile uint32_t *)0x4004C004U))
+#define PORT_PCR_MUX_GPIO   (1U << 8)
 
-void leds_off(void)
+/* GPIOB / GPIOD — registradores de dados e direção */
+#define GPIOB_PSOR          (*((volatile uint32_t *)0x400FF044U))
+#define GPIOB_PCOR          (*((volatile uint32_t *)0x400FF048U))
+#define GPIOB_PDDR          (*((volatile uint32_t *)0x400FF054U))
+
+#define GPIOD_PSOR          (*((volatile uint32_t *)0x400FF0C4U))
+#define GPIOD_PCOR          (*((volatile uint32_t *)0x400FF0C8U))
+#define GPIOD_PDDR          (*((volatile uint32_t *)0x400FF0D4U))
+
+#define LED_GREEN_BIT       (1U << 19)  /* PTB19 */
+#define LED_BLUE_BIT        (1U << 1)   /* PTD1  */
+
+/* Limiares de tensao (mV) para acionamento dos LEDs */
+#define V_NEAR_VCC_MV       2800U   /* proximo de 3.3V -> LED azul */
+#define V_NEAR_GND_MV        500U   /* proximo de 0V   -> LED verde */
+
+/* ADC0 — registradores */
+#define ADC0_SC1A           (*((volatile uint32_t *)0x4003B000U))
+#define ADC0_CFG1           (*((volatile uint32_t *)0x4003B008U))
+#define ADC0_CFG2           (*((volatile uint32_t *)0x4003B00CU))
+#define ADC0_RA             (*((volatile uint32_t *)0x4003B010U))
+#define ADC0_SC2            (*((volatile uint32_t *)0x4003B020U))
+#define ADC0_SC3            (*((volatile uint32_t *)0x4003B024U))
+
+/*
+ * ADC0_CFG1 = 0x05:
+ *   ADICLK[1:0] = 01  -> bus clock / 2 (~12 MHz, dentro do limite ADC)
+ *   MODE[3:2]   = 01  -> 12 bits de resolucao
+ *   ADLSMP      = 0   -> tempo de amostragem curto
+ *   ADIV[6:5]   = 00  -> divisor 1
+ *   ADLPC       = 0   -> modo normal (nao low-power)
+ */
+#define ADC_CFG1_12BIT_BUS2 0x05U
+
+/* ADC0_SC1A bits */
+#define ADC_COCO            (1U << 7)   /* Conversion Complete */
+#define ADC_CH_SE8          8U          /* ADC0_SE8 = PTB0 (single-ended) */
+#define ADC_CH_DISABLE      0x1FU       /* desabilita conversor */
+
+/* Tensao de referencia (mV) */
+#define VREF_MV             3300U
+
+static void adc_init(void)
 {
-    gpio_pin_set(gpiob, RED_PIN, 1);
-    gpio_pin_set(gpiob, GREEN_PIN, 1);
-    gpio_pin_set(gpiod, BLUE_PIN, 1);
+    /* 1. Habilita clock do ADC0 via SIM_SCGC6 (bit 27) */
+    SIM_SCGC6 |= SIM_SCGC6_ADC0;
+
+    /* 2. Habilita clock do Port B (para PTB0) via SIM_SCGC5 */
+    SIM_SCGC5 |= SIM_SCGC5_PORTB;
+
+    /* 3. PTB0 como analogico: MUX=000 (valor padrao, escrever 0) */
+    PORTB_PCR0 = 0U;
+
+    /* 4. Configura ADC0: 12 bits, bus/2, amostragem curta */
+    ADC0_CFG1 = ADC_CFG1_12BIT_BUS2;
+    ADC0_CFG2 = 0x00U;
+    ADC0_SC2  = 0x00U;  /* trigger por software, referencia interna */
+    ADC0_SC3  = 0x00U;  /* conversao simples (nao continua) */
+
+    /* 5. Desabilita conversor ate primeira leitura */
+    ADC0_SC1A = ADC_CH_DISABLE;
 }
 
-void red_on(void)
+static void leds_init(void)
 {
-    leds_off();
-    gpio_pin_set(gpiob, RED_PIN, 0);
+    /* Habilita clock dos ports B e D */
+    SIM_SCGC5 |= SIM_SCGC5_PORTB | SIM_SCGC5_PORTD;
+
+    /* Configura PTB19 e PTD1 como GPIO */
+    PORTB_PCR19 = PORT_PCR_MUX_GPIO;
+    PORTD_PCR1  = PORT_PCR_MUX_GPIO;
+
+    /* Direção: saída */
+    GPIOB_PDDR |= LED_GREEN_BIT;
+    GPIOD_PDDR |= LED_BLUE_BIT;
+
+    /* LEDs sao active-low: nivel 1 = apagado */
+    GPIOB_PSOR = LED_GREEN_BIT;
+    GPIOD_PSOR = LED_BLUE_BIT;
 }
 
-void yellow_on(void)
+static void leds_update(uint32_t mv)
 {
-    leds_off();
-
-    /* Red + Green = Yellow */
-    gpio_pin_set(gpiob, RED_PIN, 0);
-    gpio_pin_set(gpiob, GREEN_PIN, 0);
+    if (mv >= V_NEAR_VCC_MV) {
+        GPIOD_PCOR = LED_BLUE_BIT;   /* azul ligado */
+        GPIOB_PSOR = LED_GREEN_BIT;  /* verde apagado */
+    } else if (mv <= V_NEAR_GND_MV) {
+        GPIOB_PCOR = LED_GREEN_BIT;  /* verde ligado */
+        GPIOD_PSOR = LED_BLUE_BIT;   /* azul apagado */
+    } else {
+        GPIOB_PSOR = LED_GREEN_BIT;  /* ambos apagados */
+        GPIOD_PSOR = LED_BLUE_BIT;
+    }
 }
 
-void green_on(void)
+static uint16_t adc_read_se8(void)
 {
-    leds_off();
-    gpio_pin_set(gpiob, GREEN_PIN, 0);
+    /* Inicia conversao: escrever canal em SC1A dispara a conversao */
+    ADC0_SC1A = ADC_CH_SE8;  /* DIFF=0, AIEN=0, canal 8 */
+
+    /* Aguarda COCO (bit 7 de SC1A) — polling */
+    while (!(ADC0_SC1A & ADC_COCO)) { }
+
+    /* Le resultado (12 bits, justificado a direita) */
+    return (uint16_t)(ADC0_RA & 0x0FFFU);
 }
 
 int main(void)
 {
-    if (!device_is_ready(gpiob) || !device_is_ready(gpiod)) {
-        return -1;
-    }
-
-    /* Configure pins as outputs */
-    gpio_pin_configure(gpiob, RED_PIN, GPIO_OUTPUT_HIGH);
-    gpio_pin_configure(gpiob, GREEN_PIN, GPIO_OUTPUT_HIGH);
-    gpio_pin_configure(gpiod, BLUE_PIN, GPIO_OUTPUT_HIGH);
+    adc_init();
+    leds_init();
+    printk("=== ADC via Registradores — FRDM-KL25Z ===\n");
+    printk("Canal: ADC0_SE8 (PTB0), 12 bits, Vref = %u mV\n", VREF_MV);
 
     while (1) {
-
-        /* RED */
-        red_on();
-        k_msleep(5000);
-
-        /* GREEN */
-        green_on();
-        k_msleep(5000);
-
-		/* YELLOW */
-        yellow_on();
-        k_msleep(2000);
+        uint16_t raw = adc_read_se8();
+        uint32_t mv  = (uint32_t)raw * VREF_MV / 4095U;
+        leds_update(mv);
+        printk("ADC: %4u (0x%03X) -> %4u mV\n", raw, raw, mv);
+        k_msleep(500);
     }
-	
+
     return 0;
 }
 ```
@@ -140,8 +211,6 @@ int main(void)
 
 ## Repositório
 
-Link do repositório GitHub:
-
 ```text
-https://github.com/Beserrovsky/piscaLED-PSI3441-zephyr-blink.git
+https://github.com/Beserrovsky/PSI3441-ATV4_adc-zephyr
 ```

@@ -1,12 +1,28 @@
-# Relatório — ADC via Registradores no FRDM-KL25Z
+# Relatório — ADC via Registradores no FRDM-KL25Z (RELATÓRIO PARCIAL)
 
 ## Nome
+
 Felipe Beserra de Oliveira
 
 ---
 
 ## Número USP
+
 13683702
+
+---
+
+## Status: relatório parcial
+
+O código foi escrito a partir do enunciado e **compila sem erros**, mas ainda não foi flashado nem validado na placa física. A seção "Testes planejados" abaixo descreve o procedimento de teste previsto, não um resultado já obtido — os valores reais de tensão/LED ainda precisam ser capturados.
+
+### TODO — pendências para finalizar este relatório
+
+1. Ligar um fio/potenciômetro em PTB0, variando a tensão entre GND e 3.3V (atenção: nunca superar 3.3V, sob risco de danificar o pino).
+2. Flashar o binário compilado na FRDM-KL25Z (`pio.exe run --target upload`).
+3. Capturar a saída serial (`pio.exe device monitor`) com os valores reais de `raw` e `mv` para ao menos três pontos: próximo de 0V, faixa intermediária e próximo de 3.3V.
+4. Confirmar visualmente o acionamento correto do LED azul (perto de 3.3V), do LED verde (perto de 0V) e de nenhum dos dois na faixa intermediária.
+5. Substituir a seção "Testes planejados" pelos dados reais capturados (valores de `raw`/`mv` observados na serial e confirmação do comportamento dos LEDs).
 
 ---
 
@@ -20,14 +36,14 @@ O canal utilizado foi o `ADC0_SE8`, disponível no pino PTB0.
 
 ### Registradores utilizados
 
-| Registrador | Endereço | Função |
-|---|---|---|
-| `SIM_SCGC6` | 0x4004803C | Habilita o clock do módulo ADC0 (bit 27) |
-| `SIM_SCGC5` | 0x40048038 | Habilita o clock dos Ports B e D (bits 10 e 12) |
-| `PORTB_PCR0` | 0x4004A000 | Configura PTB0 como entrada analógica (MUX = 000) |
-| `ADC0_CFG1` | 0x4003B008 | Resolução (12 bits) e divisor de clock do ADC |
-| `ADC0_SC1A` | 0x4003B000 | Seleciona o canal e inicia a conversão; bit `COCO` indica conversão completa |
-| `ADC0_RA` | 0x4003B010 | Resultado da conversão (12 bits) |
+| Registrador    | Endereço  | Função                                                                        |
+| -------------- | ---------- | ------------------------------------------------------------------------------- |
+| `SIM_SCGC6`  | 0x4004803C | Habilita o clock do módulo ADC0 (bit 27)                                       |
+| `SIM_SCGC5`  | 0x40048038 | Habilita o clock dos Ports B e D (bits 10 e 12)                                 |
+| `PORTB_PCR0` | 0x4004A000 | Configura PTB0 como entrada analógica (MUX = 000)                              |
+| `ADC0_CFG1`  | 0x4003B008 | Resolução (12 bits) e divisor de clock do ADC                                 |
+| `ADC0_SC1A`  | 0x4003B000 | Seleciona o canal e inicia a conversão; bit`COCO` indica conversão completa |
+| `ADC0_RA`    | 0x4003B010 | Resultado da conversão (12 bits)                                               |
 
 A conversão é feita por polling: o canal é escrito em `ADC0_SC1A`, o que dispara a conversão, e o programa aguarda em loop até o bit `COCO` (bit 7) ser setado antes de ler `ADC0_RA`.
 
@@ -47,9 +63,9 @@ PTD1 (azul) e PTB19 (verde) foram configurados como saída via registradores (`P
 - `mv <= 500`: LED verde ligado, azul apagado (tensão próxima de 0V)
 - valor intermediário: ambos apagados
 
-### Testes realizados
+### Testes planejados (ainda não executados)
 
-A entrada PTB0 foi ligada manualmente a 3.3V, a GND e a um potenciômetro (faixa intermediária), confirmando que o LED azul acende perto de 3.3V, o verde perto de 0V, e nenhum dos dois nas faixas intermediárias. Os valores lidos (`raw` e `mv`) são impressos via `printk` a cada 500ms.
+O plano de teste é ligar a entrada PTB0 manualmente a 3.3V, a GND e a um potenciômetro (faixa intermediária), e verificar se o LED azul acende perto de 3.3V, o verde perto de 0V, e nenhum dos dois nas faixas intermediárias. Os valores lidos (`raw` e `mv`) são impressos via `printk` a cada 500ms, o que permitirá registrar os números reais quando o teste for executado. **Nenhum desses testes foi realizado até o momento** — esta seção será substituída pelos resultados reais assim que a fiação for feita e a placa flashada.
 
 ---
 
